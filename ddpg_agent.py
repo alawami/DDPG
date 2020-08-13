@@ -9,21 +9,22 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-BUFFER_SIZE = int(1e5)  # replay buffer size
-BATCH_SIZE = 128        # minibatch size
+BUFFER_SIZE = int(1e6)  # replay buffer size
+BATCH_SIZE = 256        # minibatch size
 GAMMA = 0.99            # discount factor
 TAU = 1e-3              # for soft update of target parameters
 LR_ACTOR = 1e-4         # learning rate of the actor 
 LR_CRITIC = 1e-3        # learning rate of the critic
 WEIGHT_DECAY = 0        # L2 weight decay
 UPDATE_EVERY = 20
-LEARN_PASS = 10
-NOISE_DECAY = 0.99999
+LEARN_PASS = 20
+NOISE_DECAY = 0.9999
 ACTOR_FC1_UNITS=400
 ACTOR_FC2_UNITS=300
 CRITIC_FCS1_UNITS=400
 CRITIC_FC2_UNITS=300
 GRADIENT_CLIP=True
+NUM_AGENTS = 20
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -59,8 +60,10 @@ class Agent():
         self.soft_update(self.actor_local, self.actor_target, 1)
 
         # Noise process
-        self.noise = OUNoise(action_size, random_seed)
-        self.noise_decay = 1
+        self.noise = OUNoiseWrapper(action_size, random_seed, NUM_AGENTS)
+#         self.noise = OUNoise(action_size, random_seed)
+        self.noise_factor = 1
+        self.noise_decay = NOISE_DECAY
         
         # Replay memory
         self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, random_seed)
@@ -91,9 +94,10 @@ class Agent():
         with torch.no_grad():
             action = self.actor_local(state).cpu().data.numpy()
         self.actor_local.train()
+        
         if add_noise:
-            action += self.noise_decay * self.noise.sample()
-            self.noise_decay *= self.noise_decay
+            action += self.noise_factor * self.noise.sample()
+            self.noise_factor *= self.noise_decay
             
         return np.clip(action, -1, 1)
 
@@ -172,19 +176,35 @@ class OUNoise:
     def sample(self):
         """Update internal state and return it as a noise sample."""
         x = self.state
-        dx = self.theta * (self.mu - x) + self.sigma * np.array([random.random() for i in range(len(x))])
-#          dx = self.theta * (self.mu - x) + self.sigma * np.array([random.randn() for i in range(len(x))])
+        
+#         dx = self.theta * (self.mu - x) + self.sigma * np.array([random.random() for i in range(len(x))])
+        dx = self.theta * x + np.random.normal(self.mu, self.sigma, len(x))
+        
         self.state = x + dx
+        
         return self.state
     
-#     def random_sample(self, mu, theta, sigma):
-#         """Update internal state and return it as a noise sample."""
+
+class OUNoiseWrapper:
+    """Wrap noise process for multi"""
+    def __init__(self, action_size, seed, num_agents=20, mu=0., mu_range=0., theta=0.15, theta_range=0.05, sigma=0.2, sigma_range=0.1):
+        self.num_agents = num_agents
         
-#         x = self.state
-#         dx = self.theta * (self.mu - x) + self.sigma * np.array([random.random() for i in range(len(x))])
-# #          dx = self.theta * (self.mu - x) + self.sigma * np.array([random.randn() for i in range(len(x))])
-#         self.state = x + dx
-#         return self.state
+        self.noise_processes = [OUNoise(action_size, seed, mu=random.uniform(mu-mu_range, mu+mu_range), theta=random.uniform(theta-theta_range, theta+theta_range), sigma=random.uniform(sigma-sigma_range, sigma+sigma_range)) for i in range(num_agents)]
+
+    def reset(self):
+        """Reset the internal state (= noise) to mean (mu)."""
+        
+        for noise_process in self.noise_processes:
+            noise_process.reset()
+
+    def sample(self):
+        """Update internal state and return it as a noise sample."""
+        
+        noise_sample = np.array([noise_process.sample() for noise_process in self.noise_processes])
+        
+        return noise_sample
+    
 
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
